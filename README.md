@@ -14,6 +14,12 @@ Ein 2D-Arcade-Shooter als einzelne HTML-Datei — ohne Build, ohne Abhängigkeit
 - **P / Esc** — Pause
 - **M** — Ton an/aus
 
+### Touch (Smartphone / Tablet)
+
+- **Linke Bildschirmhälfte ziehen** — Joystick, bewegt die Figur
+- **Rechte Bildschirmhälfte ziehen** — zielen; solange der Finger liegt, wird automatisch gefeuert
+- **Nova-Taste unten rechts** — Nova (wird nur auf Geräten mit grobem Zeiger angezeigt)
+
 ## Features
 
 - Manuelles Zielen, Twin-Stick-Steuerung

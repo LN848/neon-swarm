@@ -220,6 +220,61 @@
 
   .btns { display: flex; gap: 8px; }
 
+  /* Touch-Steuerung: nur sichtbar, wenn der Haupteingang grob ist (Finger) */
+  .joy {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    border: 2px solid rgba(103, 232, 249, .35);
+    background: rgba(103, 232, 249, .08);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s ease;
+    z-index: 6;
+  }
+
+  .joy.show { opacity: 1; }
+
+  .joy-knob {
+    position: absolute;
+    left: 36px;
+    top: 36px;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: rgba(103, 232, 249, .45);
+  }
+
+  .touch-hint { display: none; }
+
+  .touch-nova { display: none; }
+
+  body.touch .touch-hint { display: block; }
+
+  body.touch .touch-nova {
+    display: block;
+    position: fixed;
+    right: 24px;
+    bottom: calc(24px + env(safe-area-inset-bottom));
+    width: 84px;
+    height: 84px;
+    border-radius: 50%;
+    z-index: 6;
+    appearance: none;
+    border: 1px solid rgba(255, 92, 138, .6);
+    background: var(--panel);
+    color: #ffe4e6;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    touch-action: none;
+  }
+
   .toast {
     position: fixed;
     top: 92px;
@@ -360,12 +415,16 @@
 
 <div class="toast" id="toast"></div>
 
+<div class="joy" id="joy"><div class="joy-knob" id="joy-knob"></div></div>
+<button class="touch-nova" id="nova-touch" type="button">Nova</button>
+
 <div class="overlay show" id="overlay" data-kind="start">
   <div class="card">
     <h1 id="ov-title">Neon Swarm</h1>
     <p id="ov-text">Bewege dich mit WASD oder den Pfeiltasten. Ziele mit der Maus und halte die linke Maustaste zum Feuern. Pro Welle +1 Herz, im Shop warten 20 Upgrades.</p>
     <button class="btn" id="ov-btn" type="button">Start</button>
     <p class="hint" id="ov-hint">WASD/Pfeile bewegen · Maus zielen · Linksklick halten = Feuer · Rechtsklick = Nova · B = Shop · P = Pause · M = Ton</p>
+    <p class="hint touch-hint">Links ziehen = bewegen · rechts ziehen = zielen und feuern · Nova unten rechts</p>
   </div>
 </div>
 
@@ -406,6 +465,9 @@
     shopList: document.getElementById('shop-list'),
     shopScrap: document.getElementById('shop-scrap'),
     shopClose: document.getElementById('shop-close'),
+    joy: document.getElementById('joy'),
+    joyKnob: document.getElementById('joy-knob'),
+    novaTouch: document.getElementById('nova-touch'),
     toast: document.getElementById('toast')
   };
 
@@ -1147,16 +1209,19 @@
       }
     }
 
-    // Bewegung: WASD / Pfeiltasten
+    // Bewegung: WASD / Pfeiltasten, Touch-Joystick addiert sich dazu
     let ix = 0;
     let iy = 0;
     if (keys.has('a') || keys.has('arrowleft')) ix -= 1;
     if (keys.has('d') || keys.has('arrowright')) ix += 1;
     if (keys.has('w') || keys.has('arrowup')) iy -= 1;
     if (keys.has('s') || keys.has('arrowdown')) iy += 1;
+    ix = clamp(ix + touch.mx, -1, 1);
+    iy = clamp(iy + touch.my, -1, 1);
 
     if (ix !== 0 || iy !== 0) {
-      const len = Math.hypot(ix, iy);
+      // Diagonale normalisieren, Analogwerte des Joysticks unter 1 behalten
+      const len = Math.max(1, Math.hypot(ix, iy));
       const k = 1 - Math.exp(-CFG.accel * dt);
       const spd = playerSpeed();
       p.vx += ((ix / len) * spd - p.vx) * k;
@@ -1175,8 +1240,10 @@
     if (p.y < m) { p.y = m; p.vy = Math.max(0, p.vy); }
     if (p.y > H - m) { p.y = H - m; p.vy = Math.min(0, p.vy); }
 
-    // Zielen: immer zum Mauszeiger
-    if (pointer.has) {
+    // Zielen: Touch-Aim hat Vorrang, sonst immer zum Mauszeiger
+    if (touch.aimAngle !== null) {
+      p.angle = touch.aimAngle;
+    } else if (pointer.has) {
       p.angle = Math.atan2(pointer.y - p.y, pointer.x - p.x);
     }
 
@@ -1734,7 +1801,98 @@
 
   /* ---------- Eingabe ---------- */
 
+  /* ---------- Touch: linker Daumen bewegt, rechter zielt und feuert ---------- */
+
+  const touch = { moveId: null, aimId: null, ox: 0, oy: 0, mx: 0, my: 0, aimX: 0, aimY: 0, aimAngle: null };
+  const JOY_R = 56;
+
+  function showJoy(x, y) {
+    el.joy.style.transform = 'translate(' + (x - 60) + 'px, ' + (y - 60) + 'px)';
+    el.joy.classList.add('show');
+  }
+
+  function resetTouch() {
+    if (touch.aimId !== null) pointer.down = false;
+    touch.moveId = null;
+    touch.aimId = null;
+    touch.mx = 0;
+    touch.my = 0;
+    touch.aimAngle = null;
+    el.joy.classList.remove('show');
+    el.joyKnob.style.transform = '';
+  }
+
+  function touchDown(e) {
+    // HUD-Buttons (inkl. Nova-Taste) bleiben von der Spielsteuerung getrennt
+    if (e.target && e.target.closest && e.target.closest('button')) return;
+    if (game.mode !== 'playing') return;
+
+    if (touch.moveId === null && e.clientX < W * 0.5) {
+      touch.moveId = e.pointerId;
+      touch.ox = e.clientX;
+      touch.oy = e.clientY;
+      touch.mx = 0;
+      touch.my = 0;
+      showJoy(e.clientX, e.clientY);
+    } else if (touch.aimId === null) {
+      // Zielen per Ziehen: Richtung vom Berührpunkt aus, Feuer solange der Finger liegt
+      touch.aimId = e.pointerId;
+      touch.aimX = e.clientX;
+      touch.aimY = e.clientY;
+      touch.aimAngle = game.player.angle;
+      pointer.has = true;
+      pointer.down = true;
+    }
+  }
+
+  function touchMove(e) {
+    if (e.pointerId === touch.moveId) {
+      let dx = e.clientX - touch.ox;
+      let dy = e.clientY - touch.oy;
+      const d = Math.hypot(dx, dy);
+      if (d > JOY_R) {
+        dx = dx / d * JOY_R;
+        dy = dy / d * JOY_R;
+      }
+      touch.mx = dx / JOY_R;
+      touch.my = dy / JOY_R;
+      if (Math.hypot(touch.mx, touch.my) < 0.15) {
+        touch.mx = 0;
+        touch.my = 0;
+      }
+      el.joyKnob.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
+    } else if (e.pointerId === touch.aimId) {
+      const dx = e.clientX - touch.aimX;
+      const dy = e.clientY - touch.aimY;
+      if (Math.hypot(dx, dy) > 12) touch.aimAngle = Math.atan2(dy, dx);
+    }
+  }
+
+  function touchUp(e) {
+    if (e.pointerId === touch.moveId) {
+      touch.moveId = null;
+      touch.mx = 0;
+      touch.my = 0;
+      el.joy.classList.remove('show');
+      el.joyKnob.style.transform = '';
+    }
+    if (e.pointerId === touch.aimId) {
+      touch.aimId = null;
+      pointer.down = false;
+      // Letzte Zielrichtung in den Mauszeiger übernehmen, damit sie nicht springt
+      if (touch.aimAngle !== null) {
+        pointer.x = game.player.x + Math.cos(touch.aimAngle) * 300;
+        pointer.y = game.player.y + Math.sin(touch.aimAngle) * 300;
+        touch.aimAngle = null;
+      }
+    }
+  }
+
   window.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') {
+      touchMove(e);
+      return;
+    }
     const r = canvas.getBoundingClientRect();
     pointer.x = e.clientX - r.left;
     pointer.y = e.clientY - r.top;
@@ -1743,6 +1901,10 @@
 
   window.addEventListener('pointerdown', (e) => {
     AudioFX.ensure();
+    if (e.pointerType === 'touch') {
+      touchDown(e);
+      return;
+    }
     // Klicks auf HUD-Buttons dürfen weder feuern noch Nova auslösen
     if (e.target && e.target.closest && e.target.closest('button')) return;
 
@@ -1759,14 +1921,25 @@
   });
 
   window.addEventListener('pointerup', (e) => {
+    if (e.pointerType === 'touch') {
+      touchUp(e);
+      return;
+    }
     if (e.button === 0) pointer.down = false;
   });
 
-  window.addEventListener('pointercancel', () => {
-    pointer.down = false;
+  window.addEventListener('pointercancel', (e) => {
+    if (e.pointerType === 'touch') touchUp(e);
+    else pointer.down = false;
   });
 
   window.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Grobe Eingabe (Finger) erkennen: Touch-Hinweis und Nova-Taste einblenden
+  if (window.matchMedia('(pointer: coarse)').matches) {
+    document.body.classList.add('touch');
+  }
+  el.novaTouch.addEventListener('click', () => doBurst());
 
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
@@ -1829,6 +2002,7 @@
       game.mode = 'paused';
       keys.clear();
       pointer.down = false;
+      resetTouch();
       showOverlay('pause');
     }
   });
@@ -1836,6 +2010,7 @@
   window.addEventListener('blur', () => {
     keys.clear();
     pointer.down = false;
+    resetTouch();
     if (game.mode === 'playing') {
       game.mode = 'paused';
       showOverlay('pause');
